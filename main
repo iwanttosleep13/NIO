@@ -1,0 +1,138 @@
+import java.io.BufferedWriter;
+import java.io.IOException;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.*;
+import java.util.Locale;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionException;
+
+/**
+ * Л/р 9. Синхронное и асинхронное копирование средствами NIO.
+ */
+public class Main {
+    public static void main(String[] args) {
+        if (args.length != 0 && args.length != 2) {
+            System.err.println("Укажите два исходных файла или запустите без аргументов.");
+            return;
+        }
+        try {
+            Path fileOne = Path.of(args.length == 2 ? args[0] : "file1.txt");
+            Path fileTwo = Path.of(args.length == 2 ? args[1] : "file2.txt");
+
+            if (args.length == 0) {
+                createTestFile(fileOne, 2_000_000);
+                createTestFile(fileTwo, 2_000_000);
+            }
+
+            Path sequentialOne = Path.of("copy_seq_1.txt");
+            Path sequentialTwo = Path.of("copy_seq_2.txt");
+            Path asynchronousOne = Path.of("copy_async_1.txt");
+            Path asynchronousTwo = Path.of("copy_async_2.txt");
+
+            for (Path original : new Path[]{fileOne, fileTwo}) {
+                for (Path destination : new Path[]{
+                        sequentialOne, sequentialTwo,
+                        asynchronousOne, asynchronousTwo}) {
+                    NioFileCopier.checkDifferentFiles(original, destination);
+                }
+            }
+
+            System.out.println("Синхронное копирование (FileChannel):");
+
+            long startTime = System.nanoTime();
+
+            NioFileCopier.copySync(fileOne, sequentialOne);
+            System.out.println("Скопирован: " + fileOne + " -> " + sequentialOne);
+
+            NioFileCopier.copySync(fileTwo, sequentialTwo);
+            System.out.println("Скопирован: " + fileTwo + " -> " + sequentialTwo);
+
+            long sequentialTime = System.nanoTime() - startTime;
+
+            System.out.println("\nАсинхронное копирование (AsynchronousFileChannel):");
+
+            startTime = System.nanoTime();
+
+            // Запускаем обе операции до ожидания результатов.
+            CompletableFuture<Void> firstTask =
+                    report(NioFileCopier.copyAsync(fileOne, asynchronousOne),
+                            fileOne, asynchronousOne);
+
+            CompletableFuture<Void> secondTask =
+                    report(NioFileCopier.copyAsync(fileTwo, asynchronousTwo),
+                            fileTwo, asynchronousTwo);
+
+            CompletableFuture.allOf(firstTask, secondTask).join();
+
+            long asynchronousTime = System.nanoTime() - startTime;
+
+            System.out.printf(Locale.ROOT, "\nСинхронно:  %.3f мс%n",
+                    sequentialTime / 1_000_000.0);
+
+            System.out.printf(Locale.ROOT, "Асинхронно: %.3f мс%n",
+                    asynchronousTime / 1_000_000.0);
+
+            System.out.println(asynchronousTime < sequentialTime
+                    ? "В этом запуске асинхронное копирование быстрее."
+                    : "В этом запуске синхронное копирование быстрее или равно по времени.");
+
+            // Проверку выполняем вне измеряемого интервала.
+            for (Path[] filePair : new Path[][]{
+                    {fileOne, sequentialOne},
+                    {fileTwo, sequentialTwo},
+                    {fileOne, asynchronousOne},
+                    {fileTwo, asynchronousTwo}}) {
+
+                if (Files.mismatch(filePair[0], filePair[1]) != -1) {
+                    throw new IOException("Содержимое копии отличается: " + filePair[1]);
+                }
+            }
+
+            System.out.println("Проверка: все четыре копии побайтно совпадают с исходниками.");
+
+        } catch (Exception ex) {
+            Throwable error = ex instanceof CompletionException
+                    && ex.getCause() != null ? ex.getCause() : ex;
+
+            System.err.println("Ошибка: " + error.getMessage());
+        }
+    }
+
+    private static CompletableFuture<Void> report(
+            CompletableFuture<Void> task,
+            Path original,
+
+
+Path destination) {
+
+        return task.whenComplete((unused, error) -> {
+            if (error == null) {
+                System.out.println("Скопирован: " + original + " -> " + destination);
+            } else {
+                System.err.println("Не удалось скопировать "
+                        + original + ": " + error.getMessage());
+            }
+        });
+    }
+
+    private static void createTestFile(Path path, int lines) throws IOException {
+        if (Files.exists(path)) {
+            return;
+        }
+
+        System.out.println("Создаётся тестовый файл: " + path);
+
+        try (BufferedWriter writer = Files.newBufferedWriter(
+                path,
+                StandardCharsets.UTF_8,
+                StandardOpenOption.CREATE_NEW,
+                StandardOpenOption.WRITE)) {
+
+            for (int number = 1; number <= lines; number++) {
+                writer.write("Строка номер " + number
+                        + " текстового файла " + path.getFileName());
+                writer.newLine();
+            }
+        }
+    }
+}
